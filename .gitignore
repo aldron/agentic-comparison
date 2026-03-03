@@ -1,0 +1,24 @@
+# Secrets and credentials
+benchmarks/secrests
+.env
+.env.local
+google-adk-key.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

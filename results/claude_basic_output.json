@@ -1,0 +1,76 @@
+{
+  "data": [
+    {
+      "date": "2026-02-01",
+      "description": "Office Supplies",
+      "amount": "-75.20",
+      "currency": "USD",
+      "account": "Checking",
+      "transaction_id": "tx1001",
+      "ground_truth_category": "Office Supplies",
+      "category": "Office Supplies",
+      "reconciled_with": "tx1004"
+    },
+    {
+      "date": "2026-02-02",
+      "description": "Client Payment",
+      "amount": "1500.00",
+      "currency": "USD",
+      "account": "Checking",
+      "transaction_id": "tx1002",
+      "ground_truth_category": "Income",
+      "category": "Income"
+    },
+    {
+      "date": "2026-02-03",
+      "description": "Restaurant Lunch",
+      "amount": "-45.00",
+      "currency": "USD",
+      "account": "Checking",
+      "transaction_id": "tx1003",
+      "ground_truth_category": "Meals",
+      "category": "Meals"
+    },
+    {
+      "date": "2026-02-04",
+      "description": "Refund",
+      "amount": "+75.20",
+      "currency": "USD",
+      "account": "Checking",
+      "transaction_id": "tx1004",
+      "ground_truth_category": "Office Supplies",
+      "category": "Office Supplies",
+      "reconciled_with": "tx1001"
+    }
+  ],
+  "anomalies": [
+    {
+      "date": "2026-02-02",
+      "description": "Client Payment",
+      "amount": "1500.00",
+      "currency": "USD",
+      "account": "Checking",
+      "transaction_id": "tx1002",
+      "ground_truth_category": "Income",
+      "category": "Income"
+    },
+    {
+      "date": "2026-02-04",
+      "description": "Refund",
+      "amount": "+75.20",
+      "currency": "USD",
+      "account": "Checking",
+      "transaction_id": "tx1004",
+      "ground_truth_category": "Office Supplies",
+      "category": "Office Supplies",
+      "reconciled_with": "tx1001"
+    }
+  ],
+  "reconciled": [
+    [
+      "tx1001",
+      "tx1004"
+    ]
+  ],
+  "report": "Category totals:\n - Office Supplies: 0.00\n - Income: 1500.00\n - Meals: -45.00"
+}

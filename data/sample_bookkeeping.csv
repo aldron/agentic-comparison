@@ -1,0 +1,5 @@
+date,description,amount,currency,account,transaction_id,ground_truth_category
+2026-02-01,Office Supplies,-75.20,USD,Checking,tx1001,Office Supplies
+2026-02-02,Client Payment,1500.00,USD,Checking,tx1002,Income
+2026-02-03,Restaurant Lunch,-45.00,USD,Checking,tx1003,Meals
+2026-02-04,Refund,+75.20,USD,Checking,tx1004,Office Supplies

@@ -1,0 +1,9 @@
+{
+  "name": "claude_basic",
+  "success": true,
+  "elapsed_seconds": 3.897603750228882,
+  "error": null,
+  "num_transactions": 4,
+  "num_anomalies": 2,
+  "report_summary": "Category totals:\n - Office Supplies: 0.00\n - Income: 1500.00\n - Meals: -45.00"
+}

@@ -1,0 +1,5 @@
+# (Optional) pandas was previously used for CSV handling; current code uses the stdlib csv module.
+# If you want to install the optional libraries for real API integration, uncomment below.
+# pandas
+# anthropic
+# google-adk
