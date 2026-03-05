@@ -1,0 +1,24 @@
+{
+  "test_date": "2026-03-03",
+  "model": "Claude 3.5 Sonnet (both orchestrators)",
+  "num_transactions": 4,
+  "results": {
+    "claude_sdk": {
+      "latency_seconds": 0.7872171401977539,
+      "success": true,
+      "num_anomalies": 2,
+      "num_reconciled": 1
+    },
+    "google_adk": {
+      "latency_seconds": 0.06917238235473633,
+      "success": true,
+      "num_anomalies": 2,
+      "num_reconciled": 1
+    }
+  },
+  "comparison": {
+    "faster_framework": "Google ADK",
+    "speedup_ratio": "11.38x",
+    "latency_difference_ms": 718.0447578430176
+  }
+}

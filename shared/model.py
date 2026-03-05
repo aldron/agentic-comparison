@@ -14,6 +14,9 @@ class BaseModel:
     def categorize(self, records: List[Record]) -> List[Record]:
         raise NotImplementedError()
 
+    def orchestrate(self, records: List[Record]) -> Dict[str, Any]:
+        raise NotImplementedError()
+
 
 class MockModel(BaseModel):
     """Heuristic categorizer that simulates an external model call.
@@ -49,3 +52,21 @@ class MockModel(BaseModel):
                 new["category"] = "Other"
             out.append(new)
         return out
+
+    def orchestrate(self, records: List[Record]) -> Dict[str, Any]:
+        """Mock orchestration that simulates tool-calling by directly calling utils."""
+        # Simulate some latency for orchestration
+        time.sleep(self.per_call_latency * 4)  # simulate multiple calls
+        
+        from shared import utils
+        categorized = utils.categorize(records)
+        anomalies = utils.detect_anomalies(categorized)
+        reconciled = utils.reconcile(categorized)
+        report = utils.generate_report(categorized)
+        
+        return {
+            "data": categorized,
+            "anomalies": anomalies,
+            "reconciled": reconciled,
+            "report": report
+        }
