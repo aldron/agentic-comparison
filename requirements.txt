@@ -1,5 +1,6 @@
-# (Optional) pandas was previously used for CSV handling; current code uses the stdlib csv module.
-# If you want to install the optional libraries for real API integration, uncomment below.
+# Core dependencies for real API orchestration
+anthropic
+google-genai
+
+# Optional
 # pandas
-# anthropic
-# google-adk
