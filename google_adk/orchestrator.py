@@ -1,119 +1,111 @@
-"""Google Gemini-based finance orchestrator with real tool-calling.
+"""Google ADK finance orchestrator — declarative Agent pattern.
 
-Uses the Google GenAI SDK to let Gemini autonomously decide which finance tools
-to invoke, in what order, and how to interpret the results.
+Google ADK provides a true agent framework: define tools as plain Python
+functions, create an Agent, and a Runner handles the entire tool-calling
+loop automatically. No manual loop needed.
+
+Agent(tools=[...]) + InMemoryRunner.run_async() = full orchestration.
 """
 
+import asyncio
 import json
-from shared import utils
+import os
 from shared.model import MockModel, BaseModel
-from shared.tools import (
-    get_gemini_tool_declarations,
-    execute_tool,
-    ToolState,
-    SYSTEM_PROMPT,
-)
+from shared.tools import ALL_TOOLS, SYSTEM_PROMPT
 from typing import List, Dict, Any, Optional
 
 Record = Dict[str, Any]
 
-MAX_TOOL_ROUNDS = 10
-
 
 class RealGoogleModel(BaseModel):
-    """Use real Google Gemini API with function-calling for orchestration."""
+    """Google ADK Agent with automatic tool-calling orchestration."""
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
-        try:
-            from google import genai
-            from google.genai import types
-        except ImportError:
-            raise ImportError(
-                "google-genai package not found. Install with: pip install google-genai"
-            )
-        self.client = genai.Client(api_key=api_key)
+        os.environ["GOOGLE_API_KEY"] = api_key
+
+        from google.adk.agents import Agent
+        from google.adk.runners import InMemoryRunner
+        from google.genai import types
+
+        self.agent = Agent(
+            model=model,
+            name="finance_analyzer",
+            description="Analyzes bookkeeping transactions using finance tools.",
+            instruction=SYSTEM_PROMPT,
+            tools=ALL_TOOLS,
+        )
+
+        self.runner = InMemoryRunner(
+            agent=self.agent,
+            app_name="finance_benchmark",
+        )
         self.types = types
-        self.model_name = model
 
     def orchestrate(self, records: List[Record]) -> Dict[str, Any]:
-        """Run a multi-turn function-calling loop with Gemini."""
+        """Let ADK's Runner handle the full agentic loop."""
+        return asyncio.run(self._run(records))
+
+    async def _run(self, records: List[Record]) -> Dict[str, Any]:
         types = self.types
+        records_json = json.dumps(records, indent=2)
 
-        tool_declarations = get_gemini_tool_declarations()
-        tools = types.Tool(function_declarations=tool_declarations)
-        config = types.GenerateContentConfig(
-            tools=[tools],
-            system_instruction=SYSTEM_PROMPT,
+        session = await self.runner.session_service.create_session(
+            app_name="finance_benchmark",
+            user_id="benchmark_user",
         )
 
-        user_message = (
-            "Here are the financial transaction records to analyze:\n\n"
-            f"```json\n{json.dumps(records, indent=2)}\n```\n\n"
-            "Please process these records using the available tools. "
-            "Categorize them, detect anomalies, reconcile offsetting transactions, "
-            "and generate a summary report."
+        prompt = (
+            f"Analyze these financial records:\n\n```json\n{records_json}\n```\n\n"
+            "Process them through all available tools and summarize."
         )
-
-        contents = [types.Content(role="user", parts=[types.Part(text=user_message)])]
+        user_content = types.Content(
+            role="user",
+            parts=[types.Part(text=prompt)],
+        )
 
         collected = {"data": [], "anomalies": [], "reconciled": [], "report": ""}
-        tool_calls_log = []
-        state = ToolState(records)
+        tool_log = []
+        final_text = ""
 
-        for round_num in range(MAX_TOOL_ROUNDS):
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=contents,
-                config=config,
-            )
+        async for event in self.runner.run_async(
+            new_message=user_content,
+            user_id=session.user_id,
+            session_id=session.id,
+        ):
+            for fc in event.get_function_calls():
+                name = fc.name
+                print(f"  [ADK calls] {name}")
+                tool_log.append(name)
 
-            candidate = response.candidates[0]
-            has_function_call = False
-            function_responses = []
+            for fr in event.get_function_responses():
+                name = fr.name
+                resp = fr.response if hasattr(fr, "response") else {}
+                result_str = resp.get("result", "") if isinstance(resp, dict) else str(resp)
+                try:
+                    parsed = json.loads(result_str)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = result_str
 
-            for part in candidate.content.parts:
-                if part.text:
-                    print(f"  [Gemini thinks] {part.text[:200]}")
-                if part.function_call:
-                    has_function_call = True
-                    fc = part.function_call
-                    tool_name = fc.name
+                if name == "categorize_records" and isinstance(parsed, list):
+                    collected["data"] = parsed
+                elif name == "detect_anomalies" and isinstance(parsed, list):
+                    collected["anomalies"] = parsed
+                elif name == "reconcile_records" and isinstance(parsed, list):
+                    collected["reconciled"] = parsed
+                elif name == "generate_report":
+                    collected["report"] = parsed
 
-                    print(f"  [Gemini calls] {tool_name}")
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        final_text = part.text
 
-                    result = execute_tool(tool_name, state)
-                    tool_calls_log.append({"tool": tool_name})
+            if event.is_final_response() and final_text:
+                print(f"  [ADK summary] {final_text[:200]}")
 
-                    if tool_name == "categorize_records":
-                        collected["data"] = result
-                    elif tool_name == "detect_anomalies":
-                        collected["anomalies"] = result
-                    elif tool_name == "reconcile_records":
-                        collected["reconciled"] = result
-                    elif tool_name == "generate_report":
-                        collected["report"] = result
-
-                    result_json = json.dumps(result, default=str)
-                    function_responses.append(
-                        types.Part(
-                            function_response=types.FunctionResponse(
-                                name=tool_name,
-                                response={"result": result_json},
-                            )
-                        )
-                    )
-
-            contents.append(candidate.content)
-
-            if function_responses:
-                contents.append(
-                    types.Content(role="user", parts=function_responses)
-                )
-
-            if not has_function_call:
-                break
-
-        collected["tool_calls_log"] = tool_calls_log
+        collected["tool_calls_log"] = tool_log
+        if not collected["report"] and final_text:
+            collected["report"] = final_text
         return collected
 
 
@@ -124,23 +116,21 @@ class GoogleADKOrchestrator:
             try:
                 self.model = RealGoogleModel(api_key=api_key)
             except Exception as e:
-                print(f"[Google] Failed to init real model: {e}, falling back to mock")
+                print(f"[Google ADK] Failed to init: {e}, falling back to mock")
                 self.model = MockModel(per_call_latency=0.015)
         else:
             self.model = model or MockModel(per_call_latency=0.015)
 
     def run(self, records: List[Record]) -> Dict[str, Any]:
-        print("[Google ADK] Starting orchestrator pipeline with tool-calling")
+        print("[Google ADK] Starting Agent orchestration (declarative pattern)")
 
         result = self.model.orchestrate(records)
 
         print("[Google ADK] Orchestration complete")
         print(f"[Google ADK] Detected {len(result['anomalies'])} anomaly(ies)")
         print(f"[Google ADK] Reconciled {len(result['reconciled'])} pair(s)")
-        print("[Google ADK] Report generated")
-
-        if "tool_calls_log" in result:
-            tools_used = [t["tool"] for t in result["tool_calls_log"]]
-            print(f"[Google ADK] Tools called: {' -> '.join(tools_used)}")
+        if result.get("tool_calls_log"):
+            unique_tools = list(dict.fromkeys(result["tool_calls_log"]))
+            print(f"[Google ADK] Tools: {' → '.join(unique_tools)}")
 
         return result

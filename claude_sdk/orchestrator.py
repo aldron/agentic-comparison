@@ -1,11 +1,13 @@
-"""Claude SDK-based finance orchestrator with real tool-calling.
+"""Claude SDK finance orchestrator — native agentic loop pattern.
 
-Uses the Anthropic API to let Claude autonomously decide which finance tools
-to invoke, in what order, and how to interpret the results.
+The Anthropic SDK's tool-use pattern IS the while-loop checking stop_reason.
+There is no higher-level agent abstraction — the loop is by design, giving
+full control over the orchestration cycle.
+
+Loop: request → check stop_reason → execute tools → append results → repeat.
 """
 
 import json
-from shared import utils
 from shared.model import MockModel, BaseModel
 from shared.tools import (
     get_anthropic_tools,
@@ -17,41 +19,36 @@ from typing import List, Dict, Any, Optional
 
 Record = Dict[str, Any]
 
-MAX_TOOL_ROUNDS = 10
+MAX_ROUNDS = 10
 
 
 class RealClaudeModel(BaseModel):
-    """Use real Anthropic Claude API with tool-calling for orchestration."""
+    """Anthropic API with the native agentic tool-use loop."""
 
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
-        try:
-            from anthropic import Anthropic
-        except ImportError:
-            raise ImportError(
-                "anthropic package not found. Install with: pip install anthropic"
-            )
+        from anthropic import Anthropic
         self.client = Anthropic(api_key=api_key)
         self.model_name = model
 
     def orchestrate(self, records: List[Record]) -> Dict[str, Any]:
-        """Run a multi-turn tool-calling loop with Claude."""
         tools = get_anthropic_tools()
+        records_json = json.dumps(records, indent=2)
 
-        user_message = (
-            "Here are the financial transaction records to analyze:\n\n"
-            f"```json\n{json.dumps(records, indent=2)}\n```\n\n"
-            "Please process these records using the available tools. "
-            "Categorize them, detect anomalies, reconcile offsetting transactions, "
-            "and generate a summary report."
-        )
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    f"Analyze these financial records:\n\n```json\n{records_json}\n```\n\n"
+                    "Process them through all available tools and summarize."
+                ),
+            }
+        ]
 
-        messages = [{"role": "user", "content": user_message}]
-
-        collected = {"data": [], "anomalies": [], "reconciled": [], "report": ""}
-        tool_calls_log = []
         state = ToolState(records)
+        collected = {"data": [], "anomalies": [], "reconciled": [], "report": ""}
+        tool_log = []
 
-        for round_num in range(MAX_TOOL_ROUNDS):
+        for _ in range(MAX_ROUNDS):
             response = self.client.messages.create(
                 model=self.model_name,
                 max_tokens=4096,
@@ -60,49 +57,43 @@ class RealClaudeModel(BaseModel):
                 messages=messages,
             )
 
-            has_tool_use = False
+            if response.stop_reason != "tool_use":
+                for block in response.content:
+                    if block.type == "text":
+                        print(f"  [Claude] {block.text[:200]}")
+                break
+
+            messages.append({"role": "assistant", "content": response.content})
             tool_results = []
 
             for block in response.content:
                 if block.type == "text":
-                    print(f"  [Claude thinks] {block.text[:200]}")
+                    print(f"  [Claude thinks] {block.text[:120]}")
                 elif block.type == "tool_use":
-                    has_tool_use = True
-                    tool_name = block.name
-                    tool_use_id = block.id
+                    name = block.name
+                    print(f"  [Claude calls] {name}")
 
-                    print(f"  [Claude calls] {tool_name}")
+                    result = execute_tool(name, state)
+                    tool_log.append(name)
 
-                    result = execute_tool(tool_name, state)
-                    tool_calls_log.append({"tool": tool_name})
-
-                    if tool_name == "categorize_records":
+                    if name == "categorize_records":
                         collected["data"] = result
-                    elif tool_name == "detect_anomalies":
+                    elif name == "detect_anomalies":
                         collected["anomalies"] = result
-                    elif tool_name == "reconcile_records":
+                    elif name == "reconcile_records":
                         collected["reconciled"] = result
-                    elif tool_name == "generate_report":
+                    elif name == "generate_report":
                         collected["report"] = result
 
-                    result_json = json.dumps(result, default=str)
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": result_json,
-                        }
-                    )
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, default=str),
+                    })
 
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
 
-            if tool_results:
-                messages.append({"role": "user", "content": tool_results})
-
-            if response.stop_reason == "end_turn" and not has_tool_use:
-                break
-
-        collected["tool_calls_log"] = tool_calls_log
+        collected["tool_calls_log"] = tool_log
         return collected
 
 
@@ -119,17 +110,14 @@ class ClaudeOrchestrator:
             self.model = model or MockModel(per_call_latency=0.01)
 
     def run(self, records: List[Record]) -> Dict[str, Any]:
-        print("[Claude] Starting orchestrator pipeline with tool-calling")
+        print("[Claude SDK] Starting agentic loop (native tool-use pattern)")
 
         result = self.model.orchestrate(records)
 
-        print("[Claude] Orchestration complete")
-        print(f"[Claude] Detected {len(result['anomalies'])} anomaly(ies)")
-        print(f"[Claude] Reconciled {len(result['reconciled'])} pair(s)")
-        print("[Claude] Report generated")
-
-        if "tool_calls_log" in result:
-            tools_used = [t["tool"] for t in result["tool_calls_log"]]
-            print(f"[Claude] Tools called: {' -> '.join(tools_used)}")
+        print("[Claude SDK] Orchestration complete")
+        print(f"[Claude SDK] Detected {len(result['anomalies'])} anomaly(ies)")
+        print(f"[Claude SDK] Reconciled {len(result['reconciled'])} pair(s)")
+        if result.get("tool_calls_log"):
+            print(f"[Claude SDK] Tools: {' → '.join(result['tool_calls_log'])}")
 
         return result

@@ -1,5 +1,6 @@
 # Core dependencies for real API orchestration
 anthropic
+google-adk
 google-genai
 
 # Optional
