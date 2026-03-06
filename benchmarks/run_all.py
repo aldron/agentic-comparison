@@ -17,20 +17,28 @@ def run():
         reader = csv.DictReader(f)
         records = [r for r in reader]
 
-    # load keys from secrets file
-    secrets = {}
-    sec_path = Path("benchmarks/secrests")
-    if sec_path.exists():
-        with open(sec_path) as sf:
-            for line in sf:
-                line=line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    k,v = line.split("=",1)
-                    secrets[k.strip()] = v.strip()
-    claude_api = secrets.get("claude_key")
-    google_api = secrets.get("gemini_key")
+    # load keys from environment variables or secrets file
+    import os
+    claude_api = os.environ.get("CLAUDE_API_KEY")
+    google_api = os.environ.get("GEMINI_API_KEY")
+    
+    # fallback to secrets file if env vars not set
+    if not claude_api or not google_api:
+        secrets = {}
+        sec_path = Path("benchmarks/secrests")
+        if sec_path.exists():
+            with open(sec_path) as sf:
+                for line in sf:
+                    line=line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k,v = line.split("=",1)
+                        secrets[k.strip()] = v.strip()
+        if not claude_api:
+            claude_api = secrets.get("claude_key")
+        if not google_api:
+            google_api = secrets.get("gemini_key")
 
     # Claude
     def run_claude():
