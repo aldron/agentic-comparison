@@ -1,97 +1,161 @@
-"""Claude SDK finance orchestrator — native agentic loop pattern.
+"""Claude Agent SDK finance orchestrator — declarative agent pattern.
 
-The Anthropic SDK's tool-use pattern IS the while-loop checking stop_reason.
-There is no higher-level agent abstraction — the loop is by design, giving
-full control over the orchestration cycle.
+Uses the Claude Agent SDK (claude-agent-sdk) with custom MCP tools.
+Define tools with @tool, create an MCP server, and query() handles the
+entire agentic loop automatically — no manual iteration needed.
 
-Loop: request → check stop_reason → execute tools → append results → repeat.
+@tool + create_sdk_mcp_server + query() = full orchestration.
 """
 
+import asyncio
 import json
 from shared.model import MockModel, BaseModel
-from shared.tools import (
-    get_anthropic_tools,
-    execute_tool,
-    ToolState,
-    SYSTEM_PROMPT,
-)
+from shared.tools import SYSTEM_PROMPT
 from typing import List, Dict, Any, Optional
 
 Record = Dict[str, Any]
 
-MAX_ROUNDS = 10
+
+def _build_mcp_server():
+    """Build an MCP server with our finance tools."""
+    from claude_agent_sdk import tool, create_sdk_mcp_server
+    from shared import utils
+
+    @tool(
+        "categorize_records",
+        "Categorize financial transactions by analyzing descriptions. "
+        "Assigns categories like Office Supplies, Meals, Income, Refunds. "
+        "Call this first before other tools.",
+        {"records_json": str},
+    )
+    async def categorize_records(args: dict[str, Any]) -> dict[str, Any]:
+        records = json.loads(args["records_json"])
+        result = utils.categorize(records)
+        return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
+
+    @tool(
+        "detect_anomalies",
+        "Detect anomalous transactions — large amounts (>$1000) or "
+        "positive amounts in expense categories. Call after categorize.",
+        {"records_json": str},
+    )
+    async def detect_anomalies(args: dict[str, Any]) -> dict[str, Any]:
+        records = json.loads(args["records_json"])
+        result = utils.detect_anomalies(records)
+        return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
+
+    @tool(
+        "reconcile_records",
+        "Match transactions with equal-but-opposite amounts (e.g. "
+        "purchase + refund). Call after categorize.",
+        {"records_json": str},
+    )
+    async def reconcile_records(args: dict[str, Any]) -> dict[str, Any]:
+        records = json.loads(args["records_json"])
+        result = utils.reconcile(records)
+        return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
+
+    @tool(
+        "generate_report",
+        "Generate a summary report with totals grouped by category. "
+        "Call after categorize.",
+        {"records_json": str},
+    )
+    async def generate_report(args: dict[str, Any]) -> dict[str, Any]:
+        records = json.loads(args["records_json"])
+        result = utils.generate_report(records)
+        return {"content": [{"type": "text", "text": result}]}
+
+    return create_sdk_mcp_server(
+        name="finance",
+        version="1.0.0",
+        tools=[categorize_records, detect_anomalies, reconcile_records, generate_report],
+    )
 
 
 class RealClaudeModel(BaseModel):
-    """Anthropic API with the native agentic tool-use loop."""
+    """Claude Agent SDK with automatic tool-calling orchestration."""
 
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
-        from anthropic import Anthropic
-        self.client = Anthropic(api_key=api_key)
+        self.api_key = api_key
         self.model_name = model
+        self.mcp_server = _build_mcp_server()
 
     def orchestrate(self, records: List[Record]) -> Dict[str, Any]:
-        tools = get_anthropic_tools()
+        return asyncio.run(self._run(records))
+
+    async def _run(self, records: List[Record]) -> Dict[str, Any]:
+        from claude_agent_sdk import query, ClaudeAgentOptions
+        from claude_agent_sdk.types import AssistantMessage, ResultMessage
+
         records_json = json.dumps(records, indent=2)
+        prompt = (
+            f"Analyze these financial records:\n\n```json\n{records_json}\n```\n\n"
+            "Process them through all available finance tools and summarize.\n"
+            "Pass records as a JSON string to each tool's records_json parameter."
+        )
 
-        messages = [
-            {
-                "role": "user",
-                "content": (
-                    f"Analyze these financial records:\n\n```json\n{records_json}\n```\n\n"
-                    "Process them through all available tools and summarize."
-                ),
-            }
-        ]
+        options = ClaudeAgentOptions(
+            model=self.model_name,
+            system_prompt=SYSTEM_PROMPT,
+            mcp_servers={"finance": self.mcp_server},
+            allowed_tools=[
+                "mcp__finance__categorize_records",
+                "mcp__finance__detect_anomalies",
+                "mcp__finance__reconcile_records",
+                "mcp__finance__generate_report",
+            ],
+            permission_mode="bypassPermissions",
+            max_turns=15,
+            env={"ANTHROPIC_API_KEY": self.api_key},
+        )
 
-        state = ToolState(records)
         collected = {"data": [], "anomalies": [], "reconciled": [], "report": ""}
         tool_log = []
 
-        for _ in range(MAX_ROUNDS):
-            response = self.client.messages.create(
-                model=self.model_name,
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=tools,
-                messages=messages,
-            )
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if hasattr(block, "name") and hasattr(block, "input"):
+                        name = block.name.replace("mcp__finance__", "")
+                        print(f"  [Agent SDK calls] {name}")
+                        tool_log.append(name)
+                    elif hasattr(block, "content") and hasattr(block, "tool_use_id"):
+                        content = block.content
+                        if isinstance(content, str):
+                            try:
+                                parsed = json.loads(content)
+                            except (json.JSONDecodeError, TypeError):
+                                parsed = content
+                        elif isinstance(content, list) and content:
+                            text_parts = [
+                                c.get("text", "") for c in content
+                                if isinstance(c, dict) and c.get("type") == "text"
+                            ]
+                            raw = "".join(text_parts)
+                            try:
+                                parsed = json.loads(raw)
+                            except (json.JSONDecodeError, TypeError):
+                                parsed = raw
+                        else:
+                            parsed = content
 
-            if response.stop_reason != "tool_use":
-                for block in response.content:
-                    if block.type == "text":
-                        print(f"  [Claude] {block.text[:200]}")
-                break
+                        if tool_log:
+                            last_tool = tool_log[-1]
+                            if last_tool == "categorize_records" and isinstance(parsed, list):
+                                collected["data"] = parsed
+                            elif last_tool == "detect_anomalies" and isinstance(parsed, list):
+                                collected["anomalies"] = parsed
+                            elif last_tool == "reconcile_records" and isinstance(parsed, list):
+                                collected["reconciled"] = parsed
+                            elif last_tool == "generate_report":
+                                collected["report"] = parsed
 
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = []
-
-            for block in response.content:
-                if block.type == "text":
-                    print(f"  [Claude thinks] {block.text[:120]}")
-                elif block.type == "tool_use":
-                    name = block.name
-                    print(f"  [Claude calls] {name}")
-
-                    result = execute_tool(name, state)
-                    tool_log.append(name)
-
-                    if name == "categorize_records":
-                        collected["data"] = result
-                    elif name == "detect_anomalies":
-                        collected["anomalies"] = result
-                    elif name == "reconcile_records":
-                        collected["reconciled"] = result
-                    elif name == "generate_report":
-                        collected["report"] = result
-
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, default=str),
-                    })
-
-            messages.append({"role": "user", "content": tool_results})
+            elif isinstance(message, ResultMessage):
+                if message.result:
+                    print(f"  [Agent SDK] {message.result[:200]}")
+                if not collected["report"] and message.result:
+                    collected["report"] = message.result
 
         collected["tool_calls_log"] = tool_log
         return collected
@@ -104,20 +168,21 @@ class ClaudeOrchestrator:
             try:
                 self.model = RealClaudeModel(api_key=api_key)
             except Exception as e:
-                print(f"[Claude] Failed to init real model: {e}, falling back to mock")
+                print(f"[Claude] Failed to init: {e}, falling back to mock")
                 self.model = MockModel(per_call_latency=0.01)
         else:
             self.model = model or MockModel(per_call_latency=0.01)
 
     def run(self, records: List[Record]) -> Dict[str, Any]:
-        print("[Claude SDK] Starting agentic loop (native tool-use pattern)")
+        print("[Claude Agent SDK] Starting agent orchestration (declarative pattern)")
 
         result = self.model.orchestrate(records)
 
-        print("[Claude SDK] Orchestration complete")
-        print(f"[Claude SDK] Detected {len(result['anomalies'])} anomaly(ies)")
-        print(f"[Claude SDK] Reconciled {len(result['reconciled'])} pair(s)")
+        print("[Claude Agent SDK] Orchestration complete")
+        print(f"[Claude Agent SDK] Detected {len(result['anomalies'])} anomaly(ies)")
+        print(f"[Claude Agent SDK] Reconciled {len(result['reconciled'])} pair(s)")
         if result.get("tool_calls_log"):
-            print(f"[Claude SDK] Tools: {' → '.join(result['tool_calls_log'])}")
+            unique = list(dict.fromkeys(result["tool_calls_log"]))
+            print(f"[Claude Agent SDK] Tools: {' → '.join(unique)}")
 
         return result

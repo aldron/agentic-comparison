@@ -1,5 +1,6 @@
 # Core dependencies for real API orchestration
 anthropic
+claude-agent-sdk
 google-adk
 google-genai
 

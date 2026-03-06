@@ -32,7 +32,7 @@ claude_key = secrets.get("claude_key")
 gemini_key = secrets.get("gemini_key")
 
 print("=" * 70)
-print("TESTING: Claude SDK (Anthropic) vs Google ADK (Gemini) — Real Tool-Calling")
+print("TESTING: Claude Agent SDK vs Google ADK — Declarative Agent Patterns")
 print("=" * 70)
 
 results = {}
