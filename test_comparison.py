@@ -50,14 +50,14 @@ try:
     print(f"  - Anomalies: {len(result1['anomalies'])}")
     print(f"  - Reconciled pairs: {len(result1['reconciled'])}")
     if result1.get("tool_calls_log"):
-        tools = [t["tool"] for t in result1["tool_calls_log"]]
+        tools = result1["tool_calls_log"]
         print(f"  - Tool chain: {' → '.join(tools)}")
     results["claude_sdk"] = {
         "latency_seconds": time1,
         "success": True,
         "num_anomalies": len(result1["anomalies"]),
         "num_reconciled": len(result1["reconciled"]),
-        "tools_called": [t["tool"] for t in result1.get("tool_calls_log", [])],
+        "tools_called": result1.get("tool_calls_log", []),
     }
 except Exception as e:
     time1 = time.time() - start
@@ -82,14 +82,14 @@ try:
     print(f"  - Anomalies: {len(result2['anomalies'])}")
     print(f"  - Reconciled pairs: {len(result2['reconciled'])}")
     if result2.get("tool_calls_log"):
-        tools = [t["tool"] for t in result2["tool_calls_log"]]
+        tools = result2["tool_calls_log"]
         print(f"  - Tool chain: {' → '.join(tools)}")
     results["google_adk"] = {
         "latency_seconds": time2,
         "success": True,
         "num_anomalies": len(result2["anomalies"]),
         "num_reconciled": len(result2["reconciled"]),
-        "tools_called": [t["tool"] for t in result2.get("tool_calls_log", [])],
+        "tools_called": result2.get("tool_calls_log", []),
     }
 except Exception as e:
     time2 = time.time() - start

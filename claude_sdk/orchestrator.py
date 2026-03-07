@@ -16,10 +16,16 @@ from typing import List, Dict, Any, Optional
 Record = Dict[str, Any]
 
 
-def _build_mcp_server():
-    """Build an MCP server with our finance tools."""
+def _build_mcp_server(results_collector: dict = None):
+    """Build an MCP server with our finance tools.
+
+    If results_collector is provided, tool outputs are captured there so the
+    caller can inspect structured results after the agent run completes.
+    """
     from claude_agent_sdk import tool, create_sdk_mcp_server
     from shared import utils
+
+    store = results_collector if results_collector is not None else {}
 
     @tool(
         "categorize_records",
@@ -31,6 +37,7 @@ def _build_mcp_server():
     async def categorize_records(args: dict[str, Any]) -> dict[str, Any]:
         records = json.loads(args["records_json"])
         result = utils.categorize(records)
+        store["data"] = result
         return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
 
     @tool(
@@ -42,6 +49,7 @@ def _build_mcp_server():
     async def detect_anomalies(args: dict[str, Any]) -> dict[str, Any]:
         records = json.loads(args["records_json"])
         result = utils.detect_anomalies(records)
+        store["anomalies"] = result
         return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
 
     @tool(
@@ -53,6 +61,7 @@ def _build_mcp_server():
     async def reconcile_records(args: dict[str, Any]) -> dict[str, Any]:
         records = json.loads(args["records_json"])
         result = utils.reconcile(records)
+        store["reconciled"] = result
         return {"content": [{"type": "text", "text": json.dumps(result, default=str)}]}
 
     @tool(
@@ -64,6 +73,7 @@ def _build_mcp_server():
     async def generate_report(args: dict[str, Any]) -> dict[str, Any]:
         records = json.loads(args["records_json"])
         result = utils.generate_report(records)
+        store["report"] = result
         return {"content": [{"type": "text", "text": result}]}
 
     return create_sdk_mcp_server(
@@ -79,7 +89,8 @@ class RealClaudeModel(BaseModel):
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
         self.api_key = api_key
         self.model_name = model
-        self.mcp_server = _build_mcp_server()
+        self._results_store = {}
+        self.mcp_server = _build_mcp_server(self._results_store)
 
     def orchestrate(self, records: List[Record]) -> Dict[str, Any]:
         return asyncio.run(self._run(records))
@@ -110,54 +121,28 @@ class RealClaudeModel(BaseModel):
             env={"ANTHROPIC_API_KEY": self.api_key},
         )
 
-        collected = {"data": [], "anomalies": [], "reconciled": [], "report": ""}
         tool_log = []
+        self._results_store.clear()
 
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
-                    if hasattr(block, "name") and hasattr(block, "input"):
+                    if hasattr(block, "name") and hasattr(block, "id"):
                         name = block.name.replace("mcp__finance__", "")
                         print(f"  [Agent SDK calls] {name}")
                         tool_log.append(name)
-                    elif hasattr(block, "content") and hasattr(block, "tool_use_id"):
-                        content = block.content
-                        if isinstance(content, str):
-                            try:
-                                parsed = json.loads(content)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed = content
-                        elif isinstance(content, list) and content:
-                            text_parts = [
-                                c.get("text", "") for c in content
-                                if isinstance(c, dict) and c.get("type") == "text"
-                            ]
-                            raw = "".join(text_parts)
-                            try:
-                                parsed = json.loads(raw)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed = raw
-                        else:
-                            parsed = content
-
-                        if tool_log:
-                            last_tool = tool_log[-1]
-                            if last_tool == "categorize_records" and isinstance(parsed, list):
-                                collected["data"] = parsed
-                            elif last_tool == "detect_anomalies" and isinstance(parsed, list):
-                                collected["anomalies"] = parsed
-                            elif last_tool == "reconcile_records" and isinstance(parsed, list):
-                                collected["reconciled"] = parsed
-                            elif last_tool == "generate_report":
-                                collected["report"] = parsed
 
             elif isinstance(message, ResultMessage):
                 if message.result:
                     print(f"  [Agent SDK] {message.result[:200]}")
-                if not collected["report"] and message.result:
-                    collected["report"] = message.result
 
-        collected["tool_calls_log"] = tool_log
+        collected = {
+            "data": self._results_store.get("data", []),
+            "anomalies": self._results_store.get("anomalies", []),
+            "reconciled": self._results_store.get("reconciled", []),
+            "report": self._results_store.get("report", ""),
+            "tool_calls_log": tool_log,
+        }
         return collected
 
 

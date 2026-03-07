@@ -122,27 +122,56 @@ def run_claude_file_processing():
 
 
 def run_google_file_processing():
-    """Google ADK: file processing scenario."""
+    """Google ADK: file processing scenario.
+
+    ADK limitation: BuiltInCodeExecutor cannot be mixed with other tools
+    in a single agent. So we use a multi-agent architecture:
+    - code_agent: handles file I/O via code execution
+    - finance_agent: handles analysis via custom tools
+    - orchestrator_agent: delegates between them
+    """
     import asyncio
     from google.adk.agents import Agent
     from google.adk.runners import InMemoryRunner
+    from google.adk.code_executors import BuiltInCodeExecutor
     from google.genai import types
     from shared.tools import ALL_TOOLS
 
     os.environ["GOOGLE_API_KEY"] = gemini_key
 
-    agent = Agent(
+    code_agent = Agent(
         model="gemini-2.5-flash",
-        name="finance_file_processor",
-        description="Senior financial analyst with access to finance tools and code execution.",
-        instruction=SCENARIO1_SYSTEM,
-        tools=ALL_TOOLS,
-        generate_content_config=types.GenerateContentConfig(
-            tools=[types.Tool(code_execution=types.ToolCodeExecution())],
+        name="code_agent",
+        description=(
+            "Reads and writes files using Python code execution. "
+            "Call this agent when you need to load a CSV file from disk "
+            "or write a report file to disk."
         ),
+        instruction="You execute Python code to read/write files. Return file contents as text.",
+        code_executor=BuiltInCodeExecutor(),
     )
 
-    runner = InMemoryRunner(agent=agent, app_name="file_bench")
+    finance_agent = Agent(
+        model="gemini-2.5-flash",
+        name="finance_agent",
+        description=(
+            "Analyzes financial transactions using specialized tools: "
+            "categorize_records, detect_anomalies, reconcile_records, generate_report. "
+            "Call this agent when you need to analyze transaction data."
+        ),
+        instruction="You analyze financial records using the available tools.",
+        tools=ALL_TOOLS,
+    )
+
+    orchestrator = Agent(
+        model="gemini-2.5-flash",
+        name="orchestrator",
+        description="Coordinates file operations and financial analysis.",
+        instruction=SCENARIO1_SYSTEM,
+        sub_agents=[code_agent, finance_agent],
+    )
+
+    runner = InMemoryRunner(agent=orchestrator, app_name="file_bench")
     tools_used = []
     final_text = ""
 
@@ -163,9 +192,8 @@ def run_google_file_processing():
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if hasattr(part, "executable_code") and part.executable_code:
-                        lang = part.executable_code.language or "python"
                         code = part.executable_code.code or ""
-                        print(f"    [ADK {lang}] {code[:80]}...")
+                        print(f"    [ADK code] {code[:80]}...")
                         tools_used.append("code_execution")
                     if hasattr(part, "code_execution_result") and part.code_execution_result:
                         out = part.code_execution_result.output or ""
@@ -417,27 +445,51 @@ def run_claude_validation():
 
 
 def run_google_validation():
-    """Google ADK: validation scenario."""
+    """Google ADK: validation scenario.
+
+    Uses multi-agent: code_agent for running validation scripts,
+    finance_agent for analysis tools.
+    """
     import asyncio
     from google.adk.agents import Agent
     from google.adk.runners import InMemoryRunner
+    from google.adk.code_executors import BuiltInCodeExecutor
     from google.genai import types
     from shared.tools import ALL_TOOLS
 
     os.environ["GOOGLE_API_KEY"] = gemini_key
 
-    agent = Agent(
+    code_agent = Agent(
         model="gemini-2.5-flash",
-        name="finance_validator",
-        description="QA engineer with code execution and finance analysis tools.",
-        instruction=SCENARIO3_SYSTEM,
-        tools=ALL_TOOLS,
-        generate_content_config=types.GenerateContentConfig(
-            tools=[types.Tool(code_execution=types.ToolCodeExecution())],
+        name="code_agent",
+        description=(
+            "Writes and executes Python validation scripts. Call this agent "
+            "when you need to run code to verify data correctness."
         ),
+        instruction="You write and execute Python code for data validation.",
+        code_executor=BuiltInCodeExecutor(),
     )
 
-    runner = InMemoryRunner(agent=agent, app_name="validation_bench")
+    finance_agent = Agent(
+        model="gemini-2.5-flash",
+        name="finance_agent",
+        description=(
+            "Analyzes financial transactions using categorize_records, "
+            "detect_anomalies, reconcile_records, generate_report."
+        ),
+        instruction="You analyze financial records using the available tools.",
+        tools=ALL_TOOLS,
+    )
+
+    orchestrator = Agent(
+        model="gemini-2.5-flash",
+        name="qa_orchestrator",
+        description="QA engineer coordinating analysis and validation.",
+        instruction=SCENARIO3_SYSTEM,
+        sub_agents=[code_agent, finance_agent],
+    )
+
+    runner = InMemoryRunner(agent=orchestrator, app_name="validation_bench")
     tools_used = []
     final_text = ""
     code_outputs = []
