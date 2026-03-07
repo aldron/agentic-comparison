@@ -4,8 +4,8 @@
 Claude Agent SDK built-ins: Read, Write, Edit, Bash, Glob, Grep, WebSearch
 Google ADK built-ins: Google Search, Code Execution
 
-Each scenario gives the same high-level task but lets each agent use its
-native tools alongside the custom finance tools.
+Each scenario gives the same goal-oriented task — the agent must figure out
+which tools to use and in what order. We never tell it "use tool X".
 """
 import csv
 import json
@@ -37,14 +37,38 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 # ===================================================================
 # SCENARIO 1: File Processing
-# "Read a CSV from disk, analyze it, write a report to disk"
 #
-# Claude uses: Read (file) + custom tools + Write (file)
-# Google uses: Code Execution (read + write) + custom tools
+# Goal: read a CSV from disk, analyze it, write a report to disk.
+# The agent decides how to read/write files and which analysis tools
+# to call. We only describe the deliverable.
+#
+# Claude has: Read, Write, Bash + custom finance tools
+# Google has: Code Execution + custom finance tools
 # ===================================================================
 
+SCENARIO1_SYSTEM = (
+    "You are a senior financial analyst at a bookkeeping firm. "
+    "You have access to specialized finance analysis tools and "
+    "general-purpose tools for file operations and shell commands. "
+    "Produce thorough, professional-grade output."
+)
+
+SCENARIO1_PROMPT = (
+    "A client just sent us their February 2026 bookkeeping export. "
+    "The file is at data/sample_bookkeeping.csv in this project.\n\n"
+    "I need you to:\n"
+    "- Load and review the transactions\n"
+    "- Categorize every transaction\n"
+    "- Flag any anomalies\n"
+    "- Check for offsetting entries that should be reconciled\n"
+    "- Produce a full written analysis report\n\n"
+    "Save the final report to results/agent_report.txt and confirm "
+    "the file was written successfully."
+)
+
+
 def run_claude_file_processing():
-    """Claude: Read CSV → analyze with finance tools → Write report."""
+    """Claude: file processing scenario."""
     import asyncio
     from claude_agent_sdk import query, ClaudeAgentOptions
     from claude_agent_sdk.types import AssistantMessage, ResultMessage
@@ -54,14 +78,10 @@ def run_claude_file_processing():
 
     options = ClaudeAgentOptions(
         model="claude-sonnet-4-20250514",
-        system_prompt=(
-            "You are a finance analyst. Use the Read tool to load CSV data, "
-            "then use the finance MCP tools to analyze it, and finally use "
-            "the Write tool to save the report."
-        ),
+        system_prompt=SCENARIO1_SYSTEM,
         mcp_servers={"finance": mcp_server},
         allowed_tools=[
-            "Read", "Write", "Bash",
+            "Read", "Write", "Bash", "Glob", "Grep",
             "mcp__finance__categorize_records",
             "mcp__finance__detect_anomalies",
             "mcp__finance__reconcile_records",
@@ -73,20 +93,12 @@ def run_claude_file_processing():
         cwd=str(Path.cwd()),
     )
 
-    prompt = (
-        "1. Read the file data/sample_bookkeeping.csv\n"
-        "2. Use the finance tools to categorize, detect anomalies, reconcile, "
-        "and generate a report on the transactions\n"
-        "3. Write a detailed analysis report to results/claude_agent_report.txt\n"
-        "4. Use Bash to verify the report file was created (ls -la results/claude_agent_report.txt)"
-    )
-
     tools_used = []
     final_result = ""
 
     async def run():
         nonlocal final_result
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=SCENARIO1_PROMPT, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if hasattr(block, "name"):
@@ -100,7 +112,7 @@ def run_claude_file_processing():
 
     asyncio.run(run())
 
-    report_path = Path("results/claude_agent_report.txt")
+    report_path = Path("results/agent_report.txt")
     return {
         "tools_used": tools_used,
         "report_written": report_path.exists(),
@@ -110,7 +122,7 @@ def run_claude_file_processing():
 
 
 def run_google_file_processing():
-    """Google ADK: Code Execution to read CSV + custom tools + write report."""
+    """Google ADK: file processing scenario."""
     import asyncio
     from google.adk.agents import Agent
     from google.adk.runners import InMemoryRunner
@@ -122,12 +134,8 @@ def run_google_file_processing():
     agent = Agent(
         model="gemini-2.5-flash",
         name="finance_file_processor",
-        description="Reads CSV files, analyzes with finance tools, writes reports.",
-        instruction=(
-            "You are a finance analyst. You have code execution ability and "
-            "finance analysis tools. Use code execution to read CSV files and "
-            "write output files. Use the finance tools for analysis."
-        ),
+        description="Senior financial analyst with access to finance tools and code execution.",
+        instruction=SCENARIO1_SYSTEM,
         tools=ALL_TOOLS,
         generate_content_config=types.GenerateContentConfig(
             tools=[types.Tool(code_execution=types.ToolCodeExecution())],
@@ -135,7 +143,6 @@ def run_google_file_processing():
     )
 
     runner = InMemoryRunner(agent=agent, app_name="file_bench")
-
     tools_used = []
     final_text = ""
 
@@ -144,18 +151,9 @@ def run_google_file_processing():
         session = await runner.session_service.create_session(
             app_name="file_bench", user_id="user",
         )
-
-        prompt = (
-            "1. Use code execution to read data/sample_bookkeeping.csv\n"
-            "2. Use the finance tools to categorize, detect anomalies, reconcile, "
-            "and generate a report on the transactions\n"
-            "3. Use code execution to write a detailed analysis report to "
-            "results/google_agent_report.txt\n"
-            "4. Confirm the file was written successfully"
+        msg = types.Content(
+            role="user", parts=[types.Part(text=SCENARIO1_PROMPT)],
         )
-
-        msg = types.Content(role="user", parts=[types.Part(text=prompt)])
-
         async for event in runner.run_async(
             new_message=msg, user_id=session.user_id, session_id=session.id,
         ):
@@ -165,18 +163,19 @@ def run_google_file_processing():
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if hasattr(part, "executable_code") and part.executable_code:
-                        code_preview = part.executable_code.code[:100] if part.executable_code.code else ""
-                        print(f"    [ADK code] {code_preview}...")
+                        lang = part.executable_code.language or "python"
+                        code = part.executable_code.code or ""
+                        print(f"    [ADK {lang}] {code[:80]}...")
                         tools_used.append("code_execution")
                     if hasattr(part, "code_execution_result") and part.code_execution_result:
-                        output = part.code_execution_result.output or ""
-                        print(f"    [ADK exec] {output[:100]}")
+                        out = part.code_execution_result.output or ""
+                        print(f"    [ADK exec] {out[:100]}")
                     if hasattr(part, "text") and part.text:
                         final_text = part.text
 
     asyncio.run(run())
 
-    report_path = Path("results/google_agent_report.txt")
+    report_path = Path("results/agent_report.txt")
     return {
         "tools_used": tools_used,
         "report_written": report_path.exists(),
@@ -187,14 +186,35 @@ def run_google_file_processing():
 
 # ===================================================================
 # SCENARIO 2: Research + Analysis
-# "Search the web for context, then analyze the transactions"
 #
-# Claude uses: WebSearch + custom tools
-# Google uses: Google Search + custom tools
+# Goal: look up real-world context, then analyze the transactions
+# using that context. The agent decides whether/how to search.
+#
+# Claude has: WebSearch + custom finance tools
+# Google has: Google Search + custom finance tools
 # ===================================================================
 
+SCENARIO2_SYSTEM = (
+    "You are a tax-aware financial analyst who stays current on IRS "
+    "guidelines. You can search the web for reference material and you "
+    "have specialized finance analysis tools."
+)
+
+SCENARIO2_PROMPT = (
+    "We need to prepare a client's February 2026 bookkeeping for their "
+    "accountant. Before categorizing, please check current IRS guidelines "
+    "on small business expense deduction categories to make sure our "
+    "categorization aligns with what the IRS expects.\n\n"
+    "The transactions are in data/sample_bookkeeping.csv. After researching "
+    "the guidelines, analyze all transactions — categorize, detect anomalies, "
+    "reconcile, and generate a report. Then compare the automated "
+    "categorization against the IRS guidelines and flag any mismatches or "
+    "recommendations for the accountant."
+)
+
+
 def run_claude_research():
-    """Claude: WebSearch for context → finance tools for analysis."""
+    """Claude: research scenario."""
     import asyncio
     from claude_agent_sdk import query, ClaudeAgentOptions
     from claude_agent_sdk.types import AssistantMessage, ResultMessage
@@ -204,11 +224,7 @@ def run_claude_research():
 
     options = ClaudeAgentOptions(
         model="claude-sonnet-4-20250514",
-        system_prompt=(
-            "You are a finance analyst. First search the web for current "
-            "IRS small business expense categorization guidelines, then "
-            "use that context to analyze the transactions with finance tools."
-        ),
+        system_prompt=SCENARIO2_SYSTEM,
         mcp_servers={"finance": mcp_server},
         allowed_tools=[
             "WebSearch", "Read",
@@ -223,22 +239,12 @@ def run_claude_research():
         cwd=str(Path.cwd()),
     )
 
-    with open("data/sample_bookkeeping.csv") as f:
-        csv_content = f.read()
-
-    prompt = (
-        "1. Search the web for current IRS guidelines on small business expense categories\n"
-        "2. Read data/sample_bookkeeping.csv and analyze the transactions using finance tools\n"
-        "3. Compare the categorization results against what the IRS guidelines suggest\n"
-        f"4. Provide a final summary with recommendations"
-    )
-
     tools_used = []
     final_result = ""
 
     async def run():
         nonlocal final_result
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=SCENARIO2_PROMPT, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if hasattr(block, "name"):
@@ -262,7 +268,7 @@ def run_claude_research():
 
 
 def run_google_research():
-    """Google ADK: Google Search for context → finance tools for analysis."""
+    """Google ADK: research scenario."""
     import asyncio
     from google.adk.agents import Agent
     from google.adk.runners import InMemoryRunner
@@ -275,17 +281,12 @@ def run_google_research():
     agent = Agent(
         model="gemini-2.5-flash",
         name="finance_researcher",
-        description="Researches tax guidelines and analyzes transactions.",
-        instruction=(
-            "You are a finance analyst. First use Google Search to find "
-            "current IRS small business expense categorization guidelines, "
-            "then use that context to analyze transactions with finance tools."
-        ),
+        description="Tax-aware financial analyst with web search and finance tools.",
+        instruction=SCENARIO2_SYSTEM,
         tools=[google_search] + ALL_TOOLS,
     )
 
     runner = InMemoryRunner(agent=agent, app_name="research_bench")
-
     tools_used = []
     final_text = ""
 
@@ -299,15 +300,11 @@ def run_google_research():
             csv_content = f.read()
 
         prompt = (
-            "1. Search Google for current IRS guidelines on small business expense categories\n"
-            f"2. Here are the transactions to analyze:\n```\n{csv_content}\n```\n"
-            "3. Use the finance tools to categorize, detect anomalies, reconcile, "
-            "and generate a report\n"
-            "4. Compare results against IRS guidelines and provide recommendations"
+            f"{SCENARIO2_PROMPT}\n\n"
+            f"Here is the raw CSV content for reference:\n```\n{csv_content}\n```"
         )
 
         msg = types.Content(role="user", parts=[types.Part(text=prompt)])
-
         async for event in runner.run_async(
             new_message=msg, user_id=session.user_id, session_id=session.id,
         ):
@@ -334,14 +331,40 @@ def run_google_research():
 
 # ===================================================================
 # SCENARIO 3: Code Validation
-# "Write and run a validation script to check analysis results"
 #
-# Claude uses: Write + Bash
-# Google uses: Code Execution
+# Goal: analyze the data, then independently verify the results by
+# writing and running a validation program. The agent decides how to
+# code and execute the checks.
+#
+# Claude has: Read, Write, Bash + custom finance tools
+# Google has: Code Execution + custom finance tools
 # ===================================================================
 
+SCENARIO3_SYSTEM = (
+    "You are a QA engineer at a fintech company. Your job is to verify "
+    "that automated financial analysis produces correct results. You can "
+    "write and run code, and you have access to the same finance analysis "
+    "tools that the production system uses."
+)
+
+SCENARIO3_PROMPT = (
+    "Our automated finance pipeline just processed data/sample_bookkeeping.csv. "
+    "I need you to independently verify the results are correct.\n\n"
+    "First, run the finance analysis tools on the data to get the pipeline's "
+    "output. Then write and execute a validation program that checks:\n\n"
+    "- The sum of all transaction amounts is arithmetically correct\n"
+    "- The refund of +75.20 was properly matched against the -75.20 "
+    "Office Supplies charge in reconciliation\n"
+    "- The Client Payment of 1500.00 was correctly flagged as an anomaly "
+    "(since it exceeds the $1000 threshold)\n"
+    "- Every transaction received a category assignment\n\n"
+    "Report PASS or FAIL for each check, and summarize overall confidence "
+    "in the pipeline's correctness."
+)
+
+
 def run_claude_validation():
-    """Claude: Write a validation script → Bash to run it."""
+    """Claude: validation scenario."""
     import asyncio
     from claude_agent_sdk import query, ClaudeAgentOptions
     from claude_agent_sdk.types import AssistantMessage, ResultMessage
@@ -351,10 +374,7 @@ def run_claude_validation():
 
     options = ClaudeAgentOptions(
         model="claude-sonnet-4-20250514",
-        system_prompt=(
-            "You are a QA engineer for financial systems. Write validation "
-            "scripts and run them to verify data integrity."
-        ),
+        system_prompt=SCENARIO3_SYSTEM,
         mcp_servers={"finance": mcp_server},
         allowed_tools=[
             "Read", "Write", "Bash",
@@ -369,23 +389,12 @@ def run_claude_validation():
         cwd=str(Path.cwd()),
     )
 
-    prompt = (
-        "1. Read data/sample_bookkeeping.csv\n"
-        "2. Use finance tools to categorize and detect anomalies\n"
-        "3. Write a Python validation script (results/validate.py) that:\n"
-        "   - Reads the CSV and verifies all amounts sum correctly\n"
-        "   - Checks that the refund of +75.20 matches the Office Supplies charge of -75.20\n"
-        "   - Verifies the Client Payment of 1500.00 is flagged as an anomaly\n"
-        "   - Prints PASS or FAIL for each check\n"
-        "4. Run the script with Bash and report the results"
-    )
-
     tools_used = []
     final_result = ""
 
     async def run():
         nonlocal final_result
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=SCENARIO3_PROMPT, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if hasattr(block, "name"):
@@ -408,7 +417,7 @@ def run_claude_validation():
 
 
 def run_google_validation():
-    """Google ADK: Code Execution to write and run validation inline."""
+    """Google ADK: validation scenario."""
     import asyncio
     from google.adk.agents import Agent
     from google.adk.runners import InMemoryRunner
@@ -420,11 +429,8 @@ def run_google_validation():
     agent = Agent(
         model="gemini-2.5-flash",
         name="finance_validator",
-        description="Validates financial analysis results using code execution.",
-        instruction=(
-            "You are a QA engineer. Use code execution to write and run "
-            "validation scripts. Use finance tools for analysis."
-        ),
+        description="QA engineer with code execution and finance analysis tools.",
+        instruction=SCENARIO3_SYSTEM,
         tools=ALL_TOOLS,
         generate_content_config=types.GenerateContentConfig(
             tools=[types.Tool(code_execution=types.ToolCodeExecution())],
@@ -432,7 +438,6 @@ def run_google_validation():
     )
 
     runner = InMemoryRunner(agent=agent, app_name="validation_bench")
-
     tools_used = []
     final_text = ""
     code_outputs = []
@@ -443,22 +448,15 @@ def run_google_validation():
             app_name="validation_bench", user_id="user",
         )
 
+        with open("data/sample_bookkeeping.csv") as f:
+            csv_content = f.read()
+
         prompt = (
-            "1. Use finance tools to categorize and detect anomalies in this data:\n"
-            "   date,description,amount,currency,account,transaction_id,ground_truth_category\n"
-            "   2026-02-01,Office Supplies,-75.20,USD,Checking,tx1001,Office Supplies\n"
-            "   2026-02-02,Client Payment,1500.00,USD,Checking,tx1002,Income\n"
-            "   2026-02-03,Restaurant Lunch,-45.00,USD,Checking,tx1003,Meals\n"
-            "   2026-02-04,Refund,+75.20,USD,Checking,tx1004,Office Supplies\n\n"
-            "2. Then use code execution to write and run a validation script that:\n"
-            "   - Verifies all amounts sum correctly\n"
-            "   - Checks that the refund of +75.20 matches the Office Supplies charge of -75.20\n"
-            "   - Verifies the Client Payment of 1500.00 is flagged as an anomaly\n"
-            "   - Prints PASS or FAIL for each check"
+            f"{SCENARIO3_PROMPT}\n\n"
+            f"Here is the raw CSV for reference:\n```\n{csv_content}\n```"
         )
 
         msg = types.Content(role="user", parts=[types.Part(text=prompt)])
-
         async for event in runner.run_async(
             new_message=msg, user_id=session.user_id, session_id=session.id,
         ):
@@ -468,12 +466,13 @@ def run_google_validation():
             if event.content and event.content.parts:
                 for part in event.content.parts:
                     if hasattr(part, "executable_code") and part.executable_code:
-                        print(f"    [ADK code] {part.executable_code.code[:80]}...")
+                        code = part.executable_code.code or ""
+                        print(f"    [ADK code] {code[:80]}...")
                         tools_used.append("code_execution")
                     if hasattr(part, "code_execution_result") and part.code_execution_result:
-                        output = part.code_execution_result.output or ""
-                        print(f"    [ADK exec] {output[:200]}")
-                        code_outputs.append(output)
+                        out = part.code_execution_result.output or ""
+                        print(f"    [ADK exec] {out[:200]}")
+                        code_outputs.append(out)
                     if hasattr(part, "text") and part.text:
                         final_text = part.text
 
