@@ -1,0 +1,40 @@
+{
+  "test_date": "2026-03-06",
+  "models": {
+    "claude_sdk": "Claude (Anthropic API)",
+    "google_adk": "Gemini (Google GenAI API)"
+  },
+  "num_transactions": 4,
+  "results": {
+    "claude_sdk": {
+      "latency_seconds": 48.24959874153137,
+      "success": true,
+      "num_anomalies": 2,
+      "num_reconciled": 1,
+      "tools_called": [
+        "ToolSearch",
+        "categorize_records",
+        "detect_anomalies",
+        "reconcile_records",
+        "generate_report"
+      ]
+    },
+    "google_adk": {
+      "latency_seconds": 14.502540349960327,
+      "success": true,
+      "num_anomalies": 2,
+      "num_reconciled": 1,
+      "tools_called": [
+        "categorize_records",
+        "detect_anomalies",
+        "reconcile_records",
+        "generate_report"
+      ]
+    }
+  },
+  "comparison": {
+    "faster_framework": "Google ADK",
+    "speedup_ratio": "3.33x",
+    "latency_difference_ms": 33747.058391571045
+  }
+}
